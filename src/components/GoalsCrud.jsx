@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useContext } from "react";
 import supabase from "../assets/supabase/client";
 import { AuthContext } from "../contexts/userAuth";
-import Modal from "react-modal"; // Importamos la librería para el modal
+import Modal from "react-modal";
 
 const GoalsCrud = () => {
   const { user } = useContext(AuthContext);
@@ -11,11 +11,13 @@ const GoalsCrud = () => {
   const [reps, setReps] = useState(1);
   const [microcycle, setMicrocycle] = useState(1);
   const [microcycles, setMicrocycles] = useState([]);
+  const [maxMicrocycle, setMaxMicrocycle] = useState(1);
   const [lastMicrocycle, setLastMicrocycle] = useState(null);
   const [loading, setLoading] = useState(true);
   const [editingGoalId, setEditingGoalId] = useState(null);
   const [editedGoal, setEditedGoal] = useState({});
-  const [modalIsOpen, setModalIsOpen] = useState(false); // Estado para controlar la visibilidad del modal
+  const [modalIsOpen, setModalIsOpen] = useState(false);
+  const [categories, setCategories] = useState(""); // Nuevo estado para las categorías
 
   useEffect(() => {
     const fetchMicrocycles = async () => {
@@ -23,33 +25,37 @@ const GoalsCrud = () => {
         .from("goals")
         .select("microcycle")
         .eq("user_id", user.id)
-        .order("microcycle", { ascending: false })
-        .limit(1);
-  
+        .order("microcycle", { ascending: false });
+
       if (error) {
         console.error("Error fetching microcycles:", error);
       } else {
-        const maxMicrocycle = data.length > 0 ? data[0].microcycle : 1;
-        setMicrocycles(Array.from({ length: maxMicrocycle }, (_, i) => i + 1));
-        setMicrocycle(maxMicrocycle); // Seleccionar el microciclo más alto por defecto
-        fetchLastMicrocycle(maxMicrocycle);
+        const allMicrocycles = [...new Set(data.map(item => item.microcycle))]; // Eliminar duplicados usando Set
+        const newMaxMicrocycle = allMicrocycles.length > 0 ? allMicrocycles[0] : 1; // Último microciclo
+
+        if (maxMicrocycle < newMaxMicrocycle) {
+          setMicrocycles(allMicrocycles); // Actualizar todos los microciclos
+          setMaxMicrocycle(newMaxMicrocycle); // Actualizar solo el último microciclo
+          fetchLastMicrocycle(newMaxMicrocycle);
+        }
       }
     };
-  
+
+
     const fetchLastMicrocycle = async (maxMicrocycle) => {
       const { data, error } = await supabase
         .from("goals")
         .select("*")
         .eq("user_id", user.id)
         .eq("microcycle", maxMicrocycle);
-  
+
       if (error) {
         console.error("Error fetching last microcycle data:", error);
       } else {
         setLastMicrocycle(data);
       }
     };
-  
+
     const fetchGoals = async () => {
       setLoading(true);
       const { data, error } = await supabase
@@ -57,7 +63,7 @@ const GoalsCrud = () => {
         .select("*")
         .eq("user_id", user.id)
         .eq("microcycle", microcycle);
-  
+
       if (error) {
         console.error("Error fetching goals:", error);
       } else {
@@ -65,36 +71,56 @@ const GoalsCrud = () => {
       }
       setLoading(false);
     };
-  
+
     if (user) {
       fetchMicrocycles();
       fetchGoals();
     }
   }, [user, microcycle]);
-
+  useEffect(() => {
+    setMicrocycle(maxMicrocycle); // Inicializar microcycle con el valor de maxMicrocycle
+  }, [maxMicrocycle]); // Solo cuando maxMicrocycle cambie
   const createGoal = async () => {
     if (!exercise) return alert("Exercise field cannot be empty.");
 
-    const { data, error } = await supabase
-      .from("goals")
-      .insert([
-        {
-          Exercise: exercise,
-          Sets: sets || 1,
-          Reps: reps || 1,
-          user_id: user.id,
-          microcycle: microcycle,
-        },
-      ])
-      .select();
+    try {
+      const parsedCategories = categories ? JSON.parse(categories) : []; // Convertir el string de categorías a un objeto o array
+
+      const { data, error } = await supabase
+        .from("goals")
+        .insert([
+          {
+            Exercise: exercise,
+            Sets: sets || 1,
+            Reps: reps || 1,
+            user_id: user.id,
+            microcycle: microcycle,
+            categories: parsedCategories, // Incluir categorías
+          },
+        ])
+        .select();
+
+      if (error) {
+        console.error("Error creating goal:", error);
+      } else {
+        setGoals([...goals, data[0]]);
+        setExercise("");
+        setSets(1);
+        setReps(1);
+        setCategories(""); // Limpiar el input de categorías después de crear el goal
+      }
+    } catch (error) {
+      console.error("Error parsing categories:", error);
+    }
+  };
+
+  const deleteGoal = async (goalId) => {
+    const { error } = await supabase.from("goals").delete().eq("id", goalId);
 
     if (error) {
-      console.error("Error creating goal:", error);
+      console.error("Error deleting goal:", error);
     } else {
-      setGoals([...goals, data[0]]);
-      setExercise("");
-      setSets(1);
-      setReps(1);
+      setGoals(goals.filter((goal) => goal.id !== goalId));
     }
   };
 
@@ -106,22 +132,35 @@ const GoalsCrud = () => {
   };
 
   const saveEditedGoal = async (goalId) => {
-    const { data, error } = await supabase
-      .from("goals")
-      .update(editedGoal)
-      .eq("id", goalId)
-      .select();
-  
-    if (error) {
-      console.error("Error saving edited goal:", error);
-    } else if (data && data.length > 0) {
-      setGoals(goals.map((goal) => (goal.id === goalId ? data[0] : goal)));
-      setEditingGoalId(null);
-      setEditedGoal({});
-    } else {
-      console.error("No data returned when updating the goal.");
+    try {
+      // Asegurarte de que las categorías se guarden como un array
+      const updatedCategories = editedGoal.categories ? JSON.parse(editedGoal.categories) : [];
+
+      const { data, error } = await supabase
+        .from("goals")
+        .update({
+          Exercise: editedGoal.Exercise,
+          Sets: editedGoal.Sets,
+          Reps: editedGoal.Reps,
+          categories: updatedCategories,  // Guardar las categorías como un array
+        })
+        .eq("id", goalId)
+        .select();
+
+      if (error) {
+        console.error("Error saving edited goal:", error);
+      } else if (data && data.length > 0) {
+        setGoals(goals.map((goal) => (goal.id === goalId ? data[0] : goal)));
+        setEditingGoalId(null);
+        setEditedGoal({});
+      } else {
+        console.error("No data returned when updating the goal.");
+      }
+    } catch (error) {
+      console.error("Error parsing categories:", error);
     }
   };
+
 
   const handleEdit = (goal) => {
     setEditingGoalId(goal.id);
@@ -135,13 +174,27 @@ const GoalsCrud = () => {
   const createNextMicrocycle = async () => {
     if (!lastMicrocycle || lastMicrocycle.length === 0) return;
 
-    const newMicrocycle = microcycle + 1;
+    // Obtener el maxMicrocycle actual desde la base de datos antes de crear el siguiente
+    const { data: latestMicrocycleData, error: fetchMaxMicrocycleError } = await supabase
+      .from("goals")
+      .select("microcycle")
+      .eq("user_id", user.id)
+      .order("microcycle", { ascending: false })
+      .limit(1);
+
+    if (fetchMaxMicrocycleError) {
+      console.error("Error fetching max microcycle:", fetchMaxMicrocycleError);
+      return;
+    }
+
+    const newMaxMicrocycle = latestMicrocycleData.length > 0 ? latestMicrocycleData[0].microcycle : 1;
+    const newMicrocycle = newMaxMicrocycle + 1;
 
     const { data: lastGoals, error: fetchError } = await supabase
       .from("goals")
       .select("*")
       .eq("user_id", user.id)
-      .eq("microcycle", microcycle)
+      .eq("microcycle", newMaxMicrocycle) // Usar el maxMicrocycle actual
       .order("id", { ascending: true });
 
     if (fetchError) {
@@ -171,10 +224,14 @@ const GoalsCrud = () => {
       console.error("Error creating next microcycle:", error);
     } else {
       setGoals((prevGoals) => [...prevGoals, ...data]);
-      setMicrocycle(newMicrocycle);
+
+      // Actualizar maxMicrocycle con el valor calculado
+      setMaxMicrocycle(newMaxMicrocycle + 1);
+
+      // Actualizar microcycles para incluir el nuevo microciclo
+      setMicrocycles((prevMicrocycles) => [...prevMicrocycles, newMicrocycle]);
     }
   };
-
   const toggleActive = async (id, currentActiveState) => {
     const newActiveState = currentActiveState === 1 ? 0 : 1;
 
@@ -193,7 +250,6 @@ const GoalsCrud = () => {
 
   return (
     <div>
-
       <button onClick={() => setModalIsOpen(true)}>Open Goals Modal</button>
 
       <Modal
@@ -206,7 +262,7 @@ const GoalsCrud = () => {
           content: {
             backgroundColor: "white",
             padding: "20px",
-            maxWidth: "600px",
+            maxWidth: "80%",
             margin: "auto",
             borderRadius: "8px",
           },
@@ -215,7 +271,9 @@ const GoalsCrud = () => {
         <h2>Add New Goal</h2>
         <label>
           Select Microcycle:
-          <select value={microcycle} onChange={(e) => setMicrocycle(parseInt(e.target.value))}>
+          <select
+            value={microcycle}
+            onChange={(e) => setMicrocycle(parseInt(e.target.value))}>
             {microcycles.map((cycle) => (
               <option key={cycle} value={cycle}>
                 Microcycle {cycle}
@@ -236,7 +294,6 @@ const GoalsCrud = () => {
           placeholder="Sets"
           value={sets}
           onChange={(e) => setSets(parseInt(e.target.value) || 1)}
-          id="sets-input"
         />
         <p>Reps:</p>
         <input
@@ -244,7 +301,12 @@ const GoalsCrud = () => {
           placeholder="Reps"
           value={reps}
           onChange={(e) => setReps(parseInt(e.target.value) || 1)}
-          id="reps-input"
+        />
+        <p>Categories (JSON format):</p>
+        <textarea
+          placeholder='Enter categories as JSON, e.g. ["Cardio", "Strength"]'
+          value={categories}
+          onChange={(e) => setCategories(e.target.value)}
         />
         <button onClick={createGoal}>Add Goal</button>
 
@@ -260,6 +322,7 @@ const GoalsCrud = () => {
                 <th>Exercise</th>
                 <th>Sets</th>
                 <th>Reps</th>
+                <th>Categories</th> {/* Mostrar categorías en la tabla */}
                 <th>Actions</th>
                 <th>Active</th>
               </tr>
@@ -302,11 +365,23 @@ const GoalsCrud = () => {
                   </td>
                   <td>
                     {editingGoalId === goal.id ? (
+                      <textarea
+                        value={editedGoal.categories || JSON.stringify(goal.categories)}
+                        onChange={(e) => handleEditChange(e, "categories", goal.id)}
+                      />
+                    ) : (
+                      goal.categories ? JSON.stringify(goal.categories) : "No categories"
+                    )}
+                  </td>
+                  <td>
+                    {editingGoalId === goal.id ? (
                       <button onClick={() => saveEditedGoal(goal.id)}>Save</button>
                     ) : (
-                      <button onClick={() => handleEdit(goal)}>Edit</button>
+                      <>
+                        <button onClick={() => handleEdit(goal)}>Edit</button>
+                        <button onClick={() => deleteGoal(goal.id)}>Delete</button>
+                      </>
                     )}
-                    <button onClick={() => deleteGoal(goal.id)}>Delete</button>
                   </td>
                   <td>
                     <button
